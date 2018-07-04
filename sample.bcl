@@ -1,0 +1,550 @@
+' MQTT statics
+DIM MqConnected
+DIM MqQos
+DIM MqTopic$
+DIM MqMessage$
+DIM MqLength
+DIM MqOut$
+DIM MqRetain
+DIM MqIn$ 
+
+MqOut$ = ""
+MqQos = 0
+MqTopic$ = "BarioTopic"
+MqMessage$ = "Message123"
+MqLength = 0
+MqConnected = 0
+MqRetain = 0
+MqSubscribed = 0
+
+''''''''''''''''''''''''
+'' 4990 Process MQTT topic
+''''''''''''''''''''''''
+4990
+	Syslog "Topic in 4990 is " + Topic$,4
+	TopicSearch$ = "barionet/scene/"
+	
+	''If topic found and its has word set, then process
+	if and(INSTR(1,Topic$,TopicSearch$) >0,INSTR(len(TopicSearch$),Topic$,"/set") >0) then
+	
+		slashpos = INSTR(len(TopicSearch$)+1,Topic$,"/")
+		syslog "position of slash:" + str$(slashpos),5
+		
+		scene =  val(mid$(Topic$,len(TopicSearch$)+1,len(Topic$) - slashpos +1))
+			
+		syslog "scene val" + str$(scene),5
+		
+		newvalue = val(Payload$)
+		
+		syslog "Scene = " + str$(scene) + ", NewValue: " + str$(newvalue),5
+		if and(scene > 0, scene <= scenecount) then
+			ioctl 700+scene,newvalue
+		endif
+		
+		
+		MqTopic$ = "barionet/scene/"+str$(scene)+"/value"
+		MqMessage$ = str$(iostate(700+scene))
+		gosub 5260
+		
+	endif
+	
+return
+
+	
+
+''''''''''''''''''''''''
+'' 5200 MQTT subscribe receive
+''''''''''''''''''''''''
+5200
+
+	
+	if filesize(3) < 5 then return	
+	
+	if connected(3) then
+		syslog "Host: "+RMTHOST$(3)+", Port: "+STR$(RMTPORT(3))+"\r\n",5
+	
+		read 3,MqIn$ 
+		
+		PacketLen = LASTLEN(3)
+		syslog "PacketLen:"+ str$(PacketLen),5
+				
+		offset = 0  ''This will increase for each topic in packet
+		
+		5201 '' Topic loop				
+
+			if shr(midget (MqIn$,offset+1,1),4) = 3 then 'shift right to drop QOS details
+				
+				syslog "valid publish packet",5
+				''' Reset all to default
+				Topic$ = ""
+				PayloadSize=0
+				Payload$ = ""
+				
+				FOR c5210=1 TO PacketLen	
+					syslog str$(c5210)+":" + SPRINTF$("%x",MIDGET(MqIn$,c5210,1)) +":" +SPRINTF$("%u",MIDGET(MqIn$,c5210,1)) +":"+ SPRINTF$("%c",MIDGET(MqIn$,c5210,1)),5
+				NEXT c5210
+				
+				
+					'' If valid and have QOs, one should answer, but to much work for this project
+					'if(midget(MqIn$,2,1)
+					''Should work, cannot test
+					'qos = shl(midget (MqIn$,1,1),4)  ''drop packet type
+					'qos = shr(midget (MqIn$,1,1),5)   '' drop retain
+					
+					
+					RemainLen = midget(MqIn$,offset+2,1)		'NB  .. if more then 127 it breaks cause then this is split up., 				
+					
+					TopicLen = shr(midget(MqIn$,offset+3,1),8) +   midget(MqIn$,4,1)   ''Read Word
+					
+					syslog "RemainLen Length:" + str$(RemainLen),5
+					syslog "Topic Length:" + str$(TopicLen),5			
+					
+					Topic$ =  mid$(MqIn$,offset+5,TopicLen)
+					
+					Syslog "Topic :" + Topic$ ,4
+					
+					PayloadSize = RemainLen - TopicLen -2
+					Syslog "PayloadSize = " + str$(PayloadSize),5
+					Payload$ = mid$(MqIn$,offset+5+TopicLen,PayloadSize)
+					Syslog "Payload: "  + Payload$,4
+					
+					offset = offset + RemainLen + 1 +1 'Remainlength plus headers .. variable length 2nd byte not taken into considration
+					Syslog "Offset: " +str$(offset) + ", PacketLen:" + str$(PacketLen)
+				
+					gosub 4990 'Process that topic
+				
+					if offset < PacketLen then goto 5201 '' If stuff remaining, keep looping
+				
+		
+			else
+				syslog "Not a publish packet",5
+				syslog "Packet type" + SPRINTF$("%x",MIDGET(MqIn$,1,1)),5
+				'syslog SPRINTF$("packet %x",MqIn$)
+				syslog "received string = " + MqIn$  +" : lastlen =" +str$(lIn),5
+				return
+			endif		
+		
+	
+	endif
+		
+	
+	
+	
+return
+
+''''''''''''''''''''''''
+'' 5250    Mqtt Connect
+''''''''''''''''''''''
+5250
+	
+	'syslog "Starting MQTT"
+    if or(MqTopic$ = "",MqMessage$ = "") then syslog "Empty topic or Message",5:return
+	
+	'syslog "Mqtt topic sending: " +MqTopic$
+	'syslog "Mqtt Message sending: " +MqMessage$
+	
+    MqOut$ = ""	
+	
+	byte =  shl(1,4) ' Packet type 1=>connect;  BCL use 1 as first byte.	
+	midset MqOut$,1,1,byte  ''Packet type
+	midset MqOut$,2,1,18  ''Remaining length (hard coded for now)
+	
+	'Variable header  
+	midset MqOut$,3,1,0  ' length MSB (0)
+	midset MqOut$,4,1,6  ' length LSB (4)
+	
+	midset MqOut$,5,1,asc("M")	
+	midset MqOut$,6,1,asc("Q") 
+	midset MqOut$,7,1,asc("I") 
+	midset MqOut$,8,1,asc("s")
+	midset MqOut$,9,1,asc("d")
+	midset MqOut$,10,1,asc("p")
+
+	midset MqOut$,11,1,3  'Protocol level 3
+
+	
+	'Connect Flag bits
+	byte = 0
+	byte = or(byte,shl(1,1)) 'Clean Session ''TODO , might need to make it a keep session
+	'byte = or(byte,shl(0,2))  'Will 
+	'byte = or(byte,shl(0,3)) 'Will QOS
+	'byte = or(byte,shl(0,4)) 'Will Retain
+	'byte = or(byte,shl(0,5)) 'Password Flag
+	'byte = or(byte,shl(0,6)) 'Password Flag
+	
+	'Write Connect Flags
+	midset MqOut$,12,1,byte
+	midset MqOut$,13,1,0  	'Keep alive in seconds MSB
+	midset MqOut$,14,1,60	'Keep alive in seconds LSB (1 second)
+	
+	'Identifier
+	midset MqOut$,15,1,0  'Payload MSB (0)
+	midset MqOut$,16,1,4  'Payload length LSB (4 characters)
+	
+	midset MqOut$,17,1,asc("B") ''ID
+	midset MqOut$,18,1,asc("A") ''ID
+	midset MqOut$,19,1,asc("R") ''ID
+	midset MqOut$,20,1,asc("N") ''ID
+	
+	'Will	
+	'Will Message
+	'Username
+	'Password
+	
+	'syslog "String generated, ready to send length : " +	str$(len(mqtt$))
+	
+	' Send the Connect Packet	
+	if MqConnected = 0 then
+		5255		
+			'Syslog "Delay thingy for 500"
+			'Delay 500 ''Add delay to settle connections
+			'' If not open, then open
+			if connected(3)  then				
+				syslog "Connect 3 alreeady open " + str$(MqConnected)
+				MqSubscribed = 0
+				Close 3,200
+				return
+			else
+				
+				Syslog "Connecting to 10.0.0.247:1883",5
+				'Syslog "Connection status :" + str$(connected(3))
+				Open "TCN:10.0.0.247:1883" as 3  ''Use TCN (non blocking) cause if remote drops connection bcl bombs otherwise.. 
+				Syslog "Done connecting to 10.0.0.247:1883",5
+			endif
+				
+			nowsub =_TMR_(0)
+			
+		5258
+		
+			if connected(3) <> 0 then
+				syslog "Connected  to Mqtt 10.0.0.247, Sending Connect packet",5
+				
+				Write 3,MqOut$,20 ''Length is as per above --> need to actually calculate it on the fly   		
+				
+			else
+				If (_TMR_(0)-nowsub)<200 Then 
+					goto 5258 
+				else  
+					syslog "Timeout connecting to Broker connection status: "+ str$(connected(3)),5
+					
+					MqConnected =0
+					MqSubscribed  = 0
+					
+					FOR c5200=1 TO 20	
+						syslog SPRINTF$("%x",MIDGET(MqOut$,c5200,1)) +":" +SPRINTF$("%u",MIDGET(MqOut$,c5200,1)) +":"+ SPRINTF$("%c",MIDGET(MqOut$,c5200,1)),5
+					NEXT c5200
+					return
+				endif
+			endif
+			
+			'Reset Timer
+			nowsub =_TMR_(0)	
+			
+		
+		5259 '' Read the response
+			
+			
+			Read 3,mqtt$,10
+			lIn = LASTLEN(3)
+			
+			if lIn > 0 Then
+				syslog "Broker Responded to Connect",5
+				
+				if midget (mqtt$,1,1) = &H20 then ' Its connact
+						'syslog "Connact Packet Received"
+					
+						if midget (mqtt$,3,1) = &H00 then 
+							MqConnected = 1
+							syslog "Broker Accepted Us: " + str$(MqConnected),5
+							
+							return 
+						else
+							MqConnected = 0
+							MqSubscribed = 0
+							syslog "Broker rejected us: " + str$(MqConnected);
+							
+							FOR c5200=1 TO lIn	
+								syslog SPRINTF$("%x",MIDGET(mqtt$,c5200,1)) +":" +SPRINTF$("%u",MIDGET(mqtt$,c5200,1)) +":"+ SPRINTF$("%c",MIDGET(mqtt$,c5200,1))
+							NEXT c5200
+							
+							if connected(3) then close 3,200 ' close connection
+							return
+						endif
+				endif
+					
+				
+			else 
+				If and((_TMR_(0)-nowsub)<100) Then 
+					goto 5259 
+				else  
+				
+					MqConnected = 0
+					MqSubscribed = 0
+					syslog "Timeout waiting for Broker to reply on CONNECT" 
+					if connected(3) then close 3,200		
+					return
+				endif
+			endif		
+		
+			
+	endif
+	
+return
+'' ****************** Publish packet  *****************
+'' 
+5260 
+	if len(MqTopic$) = 0 then return
+	if len(MqMessage$) = 0 then return
+	''check if connected, if not connect
+	if MqConnected = 0 then 
+		gosub 5250 
+		return
+	endif
+		
+	
+	MqLength = 0
+	MqOut$ = ""
+	'Publish	
+	byte = shl(3,4) 'Packet type 3  => publish
+	'Set QOS
+	if MqQos then byte = or(byte,shl(MqQos,1))	
+	
+	'byte = or(byte,shl(1,3))  ''duplicate
+			
+	' Retain
+	if MqRetain = 1 then byte = or(byte,shl(1,0)) 
+	
+	midset MqOut$,1,1,byte
+	'' Set Length byte
+	midset MqOut$,2,1,LEN(MqTopic$)+LEN(MqMessage$)+2 '' Remain Length, 2 is for the Topic Length 
+			
+	'' Topic
+	midset MqOut$,3,1,0  	'
+	midset MqOut$,4,1,LEN(MqTopic$)  	' Set Topic Length -->todo: fix for bigger than 255 lengt
+	
+	''Payload
+	
+	''Topic
+	MqLength = MqLength + 4   '4 = offset by 4 bytes for headers already set
+	''Loop through the topic and set each string byte by offset
+	for ii5 =1 to LEN(MqTopic$)
+	'	syslog "Bla:" + MqTopic$ + ",i:" + str$(ii5)
+		midset MqOut$,ii5+MqLength,1,asc(mid$(MqTopic$,ii5,1)) 
+	next ii5
+	
+	'' Add Topic's Length
+	MqLength = MqLength + LEN(MqTopic$) 
+	
+	
+	'' Loop Through Message and set each string byte by offset
+	for ii =1 to LEN(MqMessage$)
+		midset MqOut$,ii+MqLength,1,asc(mid$(MqMessage$,ii,1)) 
+	next ii
+	''Add Message length
+	MqLength = MqLength + LEN(MqMessage$)
+	''TODO ==> Add Message ID for QOS packets. (Another 2 bytes at end of string, need to added to to length at top to)
+		
+	'Send the publish packet
+	5265
+		if connected (3) <> 0 then 
+			'If not expecting result, make it non blocking call by doing length negative
+			if MqQos = 0 then MqLength = 0-MqLength
+			
+			write 3,MqOut$,MqLength ''2 is for the Fixed Header;
+			
+			syslog "Publish packet Sent",5			
+		else 
+			MqConnected = 0
+			MqSubscribed = 0
+			syslog "Connection to broker is closed closing this side" ,5
+			Close 3,10
+			 
+			return
+		endif
+		
+		'Reset Timer
+		nowsub =_TMR_(0)
+		''Read reply
+		goto 5270
+
+		5270 ''Check response on Publish packet	
+			
+			if MqQos = 0  then	
+				syslog "Not waiting on reply as QOS is 0",5
+				return
+			endif
+			'Will only receive PUBACK something if QOS !=0
+			
+			
+			
+			Read 3,mqtt$,10
+			''Wil never work as the qos packet not properly send, see above for ID to be added on QOS packets
+			
+			lIn = LASTLEN(3)
+			syslog "Last Length read waiting on broker: " + str$(lIn) , 5
+			if lIn > 0 Then
+				syslog "Broker Responded"
+				
+				if midget (mqtt$,1,1) = shl(4,4) then ' Its PUBACK
+					syslog "PUBACK Packet Received" ,5
+					
+						if midget (mqtt$,3,1) = &H00 then 
+							syslog "Broker Accepted the Publish Message"
+							'MqConnected = 1
+							'return 
+						else
+							syslog "Broker rejected our Publish packet";
+							
+							FOR c5200=1 TO lIn	
+								syslog SPRINTF$("%x",MIDGET(mqtt$,c5200,1)) +":" +SPRINTF$("%u",MIDGET(mqtt$,c5200,1)) +":"+ SPRINTF$("%c",MIDGET(mqtt$,c5200,1))
+							NEXT c5200
+							
+							MqConnected = 0
+							MqSubscribed = 0
+							
+							'if connected(3) then close 3,1 ' close connection
+							return
+						endif
+				endif
+			else 
+				If and((_TMR_(0)-nowsub)<500) Then 
+					goto 5270 
+				else
+					syslog "Timeout waiting for Broker to reply on Publish" ,5
+					if connected(3) then 
+						
+						''MqConnected = 0
+					endif
+					'return
+				endif
+			endif	
+return			
+''***********************************  Publish end ********************************************************
+
+
+'' ********************** Subscribe packet  ***********************
+'' 
+5360 
+	 
+	if MqConnected = 0 then
+		MqSubscribed = 0
+		gosub 5250
+	endif
+	
+	if MqSubscribed = 1 then return 
+	
+	MqLength = 0
+	MqOut$ = ""
+	'Subscribe	
+	byte = shl(8,4) 'Packet type 8  => Subscribe
+	''Mandatory bit apparentley
+	byte = or(byte,shl(1,1))				
+	
+	
+	midset MqOut$,1,1,byte
+	'' Set Length  remaining byte 2
+	midset MqOut$,2,1,LEN(MqTopic$)+2 +2 +1 '' Remain Length, 2 is for the Topic Length  and another 2 for variable length plus 1 for OOS after topic
+			
+	'Packet ID . just ficed for now to 22
+	midset MqOut$,3,1,0
+	midset MqOut$,4,1,22  
+				
+				
+	'' Topic
+	midset MqOut$,5,1,0  	'
+	midset MqOut$,6,1,LEN(MqTopic$)  	' Set Topic Length -->todo: fix for bigger than 255 lengt
+	
+	'''''' Payload  ''''	
+	''Topic
+	MqLength = MqLength + 6   '6 = offset by 4 bytes for headers already set
+	''Loop through the topic and set each string byte by offset
+	
+	for ii =1 to LEN(MqTopic$)
+		midset MqOut$,ii+MqLength,1,asc(mid$(MqTopic$,ii,1)) 	
+	next ii
+	'' Set QOS to 0 to make life simple	, set after last topic char
+	midset MqOut$,MqLength + LEN(MqTopic$)+1,1,0
+	
+	'' Add Topic's Length
+	MqLength = MqLength + LEN(MqTopic$) +1 '1 for QOS
+	
+	'Send the Subscribe packet
+	5365
+		if connected (3) <> 0 then 
+			''Send subscribe packet			
+			write 3,MqOut$,MqLength  
+			
+			syslog "Subscribe packet Sent",5			
+		else 
+			syslog "Not connected to mqtt anymore",5
+			MqConnected = 0
+			MqSubscribed = 0
+			
+			return
+		endif
+		
+		'Reset Timer
+		nowsub =_TMR_(0)
+		''Read reply
+		goto 5370
+
+	5370 ''Check response on subscribe packet	
+			 
+		Read 3,mqtt$,5  'Should be 5 as only subcribe 1 topic at time
+		 
+		lIn = LASTLEN(3)
+		'syslog "Last Length read waiting on broker: " + str$(lIn) , 5
+		if lIn > 0 Then
+			syslog "Broker Responded to subscrive, checking"
+			
+			if midget (mqtt$,1,1) = shl(9,4) then ' Its SubACK
+				syslog "PUBACK Packet Received" ,5
+				
+					if midget (mqtt$,3,1) = &H00 then 
+						syslog "Broker Accepted the Subscribe Message"
+						MqSubscribed = 1
+						return 
+					else
+						syslog "Broker rejected our Publish packet";
+						
+						FOR c5200=1 TO MqLength
+							syslog SPRINTF$("%x",MIDGET(MqOut$,c5200,1)) +":" +SPRINTF$("%u",MIDGET(MqOut$,c5200,1)) +":"+ SPRINTF$("%c",MIDGET(MqOut$,c5200,1)),5
+						NEXT c5200
+						
+						MqSubscribed = 0
+						
+						
+						return
+					endif
+			else 
+				syslog "Not receive SubAct"
+			endif
+		else 
+			If and((_TMR_(0)-nowsub)<200) Then 
+				'' if still connected, then wait, otherwise remote dropped it
+				if  connected(3) then 
+					goto 5370 
+				else  
+					syslog "Remote disconnected us, guess packet is faulty" ,5				
+					
+					FOR c5200=1 TO MqLength
+						syslog SPRINTF$("%x",MIDGET(MqOut$,c5200,1)) +":" +SPRINTF$("%u",MIDGET(MqOut$,c5200,1)) +":"+ SPRINTF$("%c",MIDGET(MqOut$,c5200,1)),5
+					NEXT c5200
+						
+					MqSubscribed = 0
+					 
+					return
+				endif
+				
+			else
+				syslog "Timeout waiting for Broker to reply on Subscribe" ,5				
+				MqSubscribed = 0
+				
+				
+			endif
+		endif	
+syslog "Time taken for tcp: " + SPRINTF$("%u", _TMR_(0)-start) + "ms"
+return;
+''***********************************  Subsribe end ********************************************************
+	
+	
