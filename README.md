@@ -5,7 +5,7 @@ This still very much alpha maaybe beta version. It works, but in controlled envi
 
 * limit of 126 topic and data length (should never be that in proper configured mqtt) .
 * QOS 0 only, might improve this if there ever need
-*
+
 
 # Usage
 * Sending publish
